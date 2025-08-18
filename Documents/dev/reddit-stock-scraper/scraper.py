@@ -1,23 +1,11 @@
+from constants import STOCK_KEYWORDS, TARGET_SUBREDDITS, TICKERS_MAP
 from dotenv import load_dotenv
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
 import praw
 import re
 import string
-
-TICKER_TO_NAME = {
-    "AAPL": "Apple",
-    "AMD": "Advanced Micro Devices",
-    "AMZN": "Amazon",
-    "GOOG": "Google",
-    "META": "Facebook",
-    "NVDA": "Nvidia",
-    "SMCI": "Super Micro Computer",
-    "SPOT": "Spotify",
-    "TSLA": "Tesla"
-}
-STOCK_KEYWORDS = set(TICKER_TO_NAME.keys()) | set(name.upper() for name in TICKER_TO_NAME.values())
-TARGET_SUBREDDITS = {"stocks", "investing"}
 
 # Retrieves Reddit API
 load_dotenv()
@@ -28,10 +16,9 @@ reddit = praw.Reddit(
     password=os.getenv("REDDIT_PASSWORD"),
     user_agent=os.getenv("REDDIT_USER_AGENT")
 )
-print(reddit)
 
+# Cleans new lines, links and other generated characters
 def pre_clean_text(text):
-    # Remove newlines and non breaking spaces
     text = text.replace('\n', ' ').replace('\xa0', ' ')
     # Remove URLs
     text = re.sub(r'https?://\S+|www\.\S+|\S+\.com\b', '', text)
@@ -39,7 +26,7 @@ def pre_clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-# Cleans sentence of any non alpha characters
+# Cleans sentence more fully of any non alpha characters
 def get_clean_sentence(sentence):
     # List of emoji types
     emoji_pattern = re.compile(
@@ -54,7 +41,7 @@ def get_clean_sentence(sentence):
             flags=re.UNICODE
         )
     cleaned_sentence = []
-    
+
     for word in sentence.split():
         word = word.lower()
         # Remove stopwords
@@ -93,7 +80,8 @@ def collect_texts(target_subreddits, tickers):
                     raw_texts.append(pre_clean_text(comment.body))
     return raw_texts
 
-def get_ticker_sentences(texts, tickers, max_sentence_length=30, window=7):
+# Retrieves all sentences with relevant stock mentions
+def get_ticker_sentences(texts, tickers, max_sentence_length=30, window=5):
     ticker_sentences = []
     # Groups into sentences and words in each
     for text in texts:
@@ -106,19 +94,46 @@ def get_ticker_sentences(texts, tickers, max_sentence_length=30, window=7):
                 if any(word.upper() == ticker for word in words):
                     if len(words) <= max_sentence_length:
                         ticker_sentences.append(get_clean_sentence(sentence))
-                # Filters for stock ticker in longer sentences
-                else:
-                    ticker_indexes = [i for i, word in enumerate(words) 
+                    # Filters for stock ticker in longer sentences
+                    else:
+                        ticker_indexes = [i for i, word in enumerate(words)
                                             if word.upper() == ticker]
                     # Extract words around ticker and extra words at end
-                    for index in ticker_indexes:
-                        start = max(0, index - window)
-                        end = min(len(words), index + window + 5)
-                        ticker_context = " ".join(words[start:end])
-                        ticker_sentences.append(get_clean_sentence(ticker_context))
+                        for index in ticker_indexes:
+                            start = max(0, index - window)
+                            end = min(len(words), index + window + 1)
+                            ticker_context = " ".join(words[start:end])
+                            ticker_sentences.append(get_clean_sentence(ticker_context))
     return ticker_sentences
 
+# Retrieves score sentiments for all mentioned stocks
+def get_score_sentiment(ticker_sentences, tickers_map):
+    analyzer = SentimentIntensityAnalyzer()
+    # Maps names to tickers
+    ticker_names_map = {v.upper(): k for k, v in tickers_map.items()}
+    # Creates dictionary to store sentiment scores
+    stock_sentiments = {ticker: [] for ticker in tickers_map}
+
+    # Retrieve sentiment scores
+    for sentence in ticker_sentences:
+        sentence_string = " ".join(sentence)
+        sentiment_score = analyzer.polarity_scores(sentence_string)["compound"]
+
+        # Find relevant stock of sentence
+        for word in sentence_string.upper().split():
+            if word in tickers_map:
+                stock_sentiments[word].append(sentiment_score)
+            elif word in ticker_names_map:
+                stock_sentiments[ticker_names_map[word]].append(sentiment_score)
+
+    # Retrieve sentiment score for each targeted stock
+    for ticker, scores in stock_sentiments.items():
+        if scores:
+            average_score = sum(scores) / len(scores)
+            print(f"{ticker} ({tickers_map[ticker]}): {average_score:.3f}")
+        else:
+            print(f"{ticker} ({tickers_map[ticker]}): No data found")
+
 subreddit_texts = collect_texts(TARGET_SUBREDDITS, STOCK_KEYWORDS)
-# print(subreddit_texts)
 ticker_sentences = get_ticker_sentences(subreddit_texts, STOCK_KEYWORDS)
-print(ticker_sentences)
+get_score_sentiment(ticker_sentences, TICKERS_MAP)
